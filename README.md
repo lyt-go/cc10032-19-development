@@ -16,7 +16,9 @@
 │   └── vite.config.ts        dev server 配置（open: false）
 ├── backend/                  FastAPI（Python） 后端
 │   ├── app/routers/resource.py  通用查询/导出/登记/动作接口
+│   ├── app/routers/lineage_impact.py  历史血缘影响（版本化边/时刻路径/试算单）
 │   ├── app/services/<key>.py    每个模块独立领域逻辑
+│   ├── app/services/lineage_impact.py  历史时刻路径查询与影响范围试算
 │   ├── app/services/base.py     共享服务骨架
 │   └── app/store.py          内存数据仓库与示例数据
 ├── .gitignore
@@ -76,6 +78,26 @@ npm run dev
   `frontend/src/domain/<模块>.ts`，用于承载真实业务差异并维持36题位容量。
 - 列表接口统一返回 `{ items, total, page, size }`，动作接口统一返回 `{ ok, message }`。
 - 状态流转只允许在 `app/services` 里改，路由层不做业务判断。
+
+## 历史血缘影响分析（lineage-impact）
+
+血缘调整前按“表 + 时刻”评估影响范围，独立于18个通用模块的 `/api/lineage-impact` 接口：
+
+- **版本化时间边**：每条边带 `effective_at` / `replaced_at`，支持登记、废弃（deprecate）、
+  变更替换（replace，新旧版本以 `replaces_edge_id` / `successor_edge_id` 显式关联）、
+  回滚（rollback）和更正边登记/确认。
+- **按时刻路径查询** `POST /api/lineage-impact/query`：只取该时刻有效边
+  （`effective_at <= 时刻` 且未被替换），枚举同一张表的全部到达路径；
+  同一张表在影响清单口径只计一次，但每条路径与每条边的生效/替换时间都可复核。
+- **影响试算单** `POST /api/lineage-impact/trials`：创建即深拷贝冻结当时的有效路径。
+  历史更正边在发布前到达时，试算单必须显式写明策略——`original_graph`（继续沿用原图）
+  或 `corrected_graph`（采用已确认更正重查，未确认更正会被拒绝）。
+- **表格式影响清单** `POST /trials/{id}/confirm`：按试算所选时刻的有效路径回写，
+  每张受影响表一行并保留完整路径明细；已发布评估不可变，当前边废弃/回滚不会改写历史评估，
+  确认时同时输出与当前图的漂移报告（新增/缺失表、路径数变化）。
+- 前端入口为侧边栏「历史血缘影响」（`/lineage-impact`，`LineageImpactView.vue`）。
+- 验收用例：`backend/tests/test_lineage_impact.py`，覆盖 A→B→D 与 A→C→D 双路径、
+  两个时间点废弃 B→D / 新增 D→E、试算期补登记 C→F、更正边策略与回滚不可变性。
 
 领域：数据工程
 子方向：数仓与数据湖

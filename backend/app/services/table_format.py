@@ -130,4 +130,54 @@ class TableFormatService(BaseModuleService):
     def domain_snapshot(self) -> dict[str, Any]:
         base = super().domain_snapshot()
         base["active_configs"] = sum(1 for r in store.rows(self.MODULE) if r.get("status") == "已生效")
+        base["impact_entries"] = len(store.impact_entries())
         return base
+
+    # ------------------------------------------------------------------
+    # 消费 lineage_impact 回写的表格式影响清单
+    # ------------------------------------------------------------------
+    def impact_list_for_table(self, target_table: str) -> dict[str, Any]:
+        """读取某张表的已发布影响评估。
+
+        历史任务按原时刻保留路径与策略：清单条目不可变，
+        当前血缘边的废弃/回滚不会改掉已有评估。
+        """
+        entries = [
+            dict(e) for e in store.impact_entries() if e.get("目标表") == target_table
+        ]
+        entries.sort(key=lambda e: (e.get("评估时刻ts", 0), e.get("id", 0)))
+        return {
+            "ok": True,
+            "table": target_table,
+            "entries": entries,
+            "evaluation_count": len(entries),
+            "distinct_source_tables": sorted({e.get("源表", "") for e in entries}),
+        }
+
+    def write_strategy_for_evaluation(self, entry_id: int) -> dict[str, Any]:
+        """按已发布影响清单评估写入策略：路径越多，写入策略越保守。"""
+        entry = store.find(self.MODULE, entry_id)
+        if entry is None:
+            return {"ok": False, "reason": f"配置 {entry_id} 不存在"}
+        table_name = str(entry.get("目标表", ""))
+        impact = self.impact_list_for_table(table_name)
+        max_paths = max(
+            (e.get("到达路径数", 0) for e in impact["entries"]),
+            default=0,
+        )
+        fmt = str(entry.get("表格式类型", "iceberg")).lower()
+        if max_paths >= 2:
+            mode = "upsert" if fmt == "iceberg" else "merge"
+            reason = "该表存在多条血缘到达路径，按影响清单建议使用可合并写入模式"
+        else:
+            mode = "append"
+            reason = "血缘到达路径单一，使用append模式"
+        return {
+            "ok": True,
+            "table": table_name,
+            "format": fmt,
+            "recommended_write_mode": mode,
+            "reason": reason,
+            "based_on_evaluations": impact["evaluation_count"],
+            "max_arrival_paths": max_paths,
+        }
